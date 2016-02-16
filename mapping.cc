@@ -33,6 +33,42 @@ int x_to_linux(int k)
   return k - 8;
 }
 
+// usb gadget has its own mapping.
+// letters: 'a' = 4, b=5..
+// numbers: 1 = 0x1e ... 0 = 0x27
+int lg_alphabet[] = { KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F, KEY_G, KEY_H,
+  KEY_I, KEY_J, KEY_K, KEY_L, KEY_M, KEY_N, KEY_O, KEY_P,
+KEY_Q, KEY_R, KEY_S, KEY_T, KEY_U, KEY_V, KEY_W, KEY_X, KEY_Y, KEY_Z};
+
+std::map<int, int> ltog = {
+  {KEY_ENTER, 0x28}, {KEY_ESC, 0x29}, {KEY_BACKSPACE, 0x2a}, {KEY_TAB, 0x2b},
+  {KEY_SPACE, 0x2c}, { KEY_CAPSLOCK, 0x39},
+  {KEY_F11, 0x44}, {KEY_F12, 0x45}, {KEY_INSERT, 0x49}, {KEY_HOME, 0x4a},
+  {KEY_PAGEUP, 0x4b}, {KEY_DELETE, 0x4c}, { KEY_END, 0x4d}, { KEY_PAGEDOWN, 0x4e},
+  {KEY_RIGHT, 0x4f}, {KEY_LEFT, 0x50}, {KEY_DOWN, 0x51}, {KEY_KPENTER, 0x58},
+  {KEY_UP, 0x52},  {KEY_NUMLOCK, 0x53},
+  
+  {KEY_LEFTCTRL, -0x01}, {KEY_RIGHTCTRL, -0x10},
+  {KEY_LEFTSHIFT, -0x02}, { KEY_RIGHTSHIFT, -0x20},
+  {KEY_LEFTALT, -0x04}, {KEY_RIGHTALT, -0x40},
+  {KEY_LEFTMETA, -0x08}, {KEY_RIGHTMETA, -0x80},
+};
+static const int UNKNOWN_LKEY = 0x10000;
+int linux_to_g(int i)
+{
+  auto letter = std::find(lg_alphabet, lg_alphabet+26, i);
+  if (letter != lg_alphabet + 26)
+    return 4 + (letter - lg_alphabet);
+  if (i >= KEY_1 && i <= KEY_0)
+    return i - KEY_1 + 0x1e;
+  if (i >= KEY_F1 && i <= KEY_F10)
+    return i - KEY_F1 + 0x3a;
+  auto it = ltog.find(i);
+  if (it != ltog.end())
+    return it->second;
+  return UNKNOWN_LKEY;
+}
+
 enum class ModsL
 {
   lshift = 42,
@@ -274,6 +310,65 @@ void step(State& s, Event ev, Emitter emitter)
   }
 }
 
+class GHID
+{
+public:
+  GHID(std::string const& dev);
+  void output(input_event ev);
+  unsigned char mods; // modifiers which are down
+  std::set<int> keys; // keys which are down
+  int fd;
+};
+
+GHID::GHID(std::string const& dev)
+: mods(0)
+{
+  fd = open(dev.c_str(), O_RDWR);
+  if (fd == -1)
+    throw std::runtime_error("open ghid device failed");
+}
+
+void GHID::output(input_event ev)
+{
+  if (ev.type != (int) Type::keyEvent)
+    return;
+  Action a = (Action)ev.value;
+  int key = ev.code;
+  int gkey = linux_to_g(key);
+  if (gkey == UNKNOWN_LKEY)
+  {
+    std::cerr << "unknown lkey " << key << std::endl;
+    return;
+  }
+  // update state
+  if (gkey < 0)
+  {
+    int gmod = -gkey;
+    if (a == Action::up)
+      mods &= ~gmod;
+    else if (a == Action::down)
+      mods |= gmod;
+  }
+  else
+  {
+    if (a == Action::up)
+      keys.erase(gkey);
+    else if (a == Action::down)
+      keys.insert(gkey);
+  }
+  // generate report
+  unsigned char report[8] = {0,0,0,0,0,0,0,0};
+  report[0] = mods;
+  int p = 2;
+  for (auto const& g: keys)
+  {
+    if (p < 8)
+      report[p++] = g;
+  }
+  int res = write(fd, report, 8);
+  if (res != 8)
+    throw std::runtime_error("report write failed");
+}
 
 void output(input_event ev)
 {
@@ -299,6 +394,7 @@ int main(int argc, char** argv)
     std::ifstream ifs(argv[3]);
     effective = parse_xmodmap(ifs);
   }
+  GHID gadget(argv[4]);
   State s = State{0, 0, 0, 0, 0, 0, 0, 0, target, effective};
   while (true)
   {
@@ -313,7 +409,7 @@ int main(int argc, char** argv)
     for (int i=0; i*size < rd; ++i)
     {
       if (ev[i].type != (int)Type::keyEvent)
-        output(ev[i]);
+        gadget.output(ev[i]);
       else
       {
         std::cerr << "<=" << (int)ev[i].type << ' ' << (int)ev[i].code << ' ' << ev[i].value << std::endl;
@@ -322,7 +418,7 @@ int main(int argc, char** argv)
             ie.type = (int)Type::keyEvent;
             ie.code = ev.lcode;
             ie.value = (int)ev.action;
-            output(ie);
+            gadget.output(ie);
         });
       }
     }
