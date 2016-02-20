@@ -4,7 +4,11 @@
 # fails on the busybox shell, wrong number of \\ ?
 #descriptor=05010906a101050719e029e71500250175019508810295017508810395057501050819012905910295017503910395067508150025650507190029658100c0
 #echo -n $descriptor | sed 's/\([0-9A-F]\{2\}\)/\\\\\\x\1/gI' | xargs printf > my_report_desc
-set -e
+#set -e
+
+# kill arduino stuff
+kill $(ps |grep launcher |grep -v grep | cut '-d ' -f 3)
+rmmod g_serial
 
 mydir=$(pwd)
 
@@ -30,3 +34,7 @@ echo "Conf 1" > configs/c.1/strings/0x409/configuration
 echo 120 > configs/c.1/MaxPower
 ln -s functions/hid.usb0 configs/c.1
 echo 0000:00:14.2 > UDC
+
+
+# Start
+./mapping.i586 /dev/input/by-id/*-kbd  target.xmodmap fr.xmodmap /dev/hidg0

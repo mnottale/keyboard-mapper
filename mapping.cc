@@ -47,6 +47,17 @@ std::map<int, int> ltog = {
   {KEY_PAGEUP, 0x4b}, {KEY_DELETE, 0x4c}, { KEY_END, 0x4d}, { KEY_PAGEDOWN, 0x4e},
   {KEY_RIGHT, 0x4f}, {KEY_LEFT, 0x50}, {KEY_DOWN, 0x51}, {KEY_KPENTER, 0x58},
   {KEY_UP, 0x52},  {KEY_NUMLOCK, 0x53},
+
+  {KEY_MINUS, 45}, {KEY_EQUAL, 46}, {KEY_LEFTBRACE, 47}, {KEY_RIGHTBRACE, 48},
+  {KEY_BACKSLASH, 49}, {KEY_SEMICOLON, 51}, {KEY_APOSTROPHE, 52},
+  {KEY_GRAVE, 53}, {KEY_COMMA, 54}, {KEY_DOT, 55},
+  {KEY_SYSRQ, 70}, {KEY_SCROLLLOCK, 71}, {KEY_PAUSE, 72},
+  {KEY_INSERT, 73}, {KEY_HOME, 74}, {KEY_END, 77},
+  {KEY_KPSLASH, 84}, { KEY_KPASTERISK, 85}, {KEY_KPMINUS, 86},
+  {KEY_KPPLUS, 87}, { KEY_KP1, 89}, {KEY_KP2, 90}, {KEY_KP3, 91},
+  {KEY_KP4, 92}, { KEY_KP5, 93}, {KEY_KP6, 94}, {KEY_KP7, 95},
+  {KEY_KP8, 96}, { KEY_KP9, 97}, {KEY_KP0, 98},
+  {KEY_KPDOT, 99}, {KEY_102ND, 100}, {KEY_COMPOSE, 101},
   
   {KEY_LEFTCTRL, -0x01}, {KEY_RIGHTCTRL, -0x10},
   {KEY_LEFTSHIFT, -0x02}, { KEY_RIGHTSHIFT, -0x20},
@@ -158,7 +169,8 @@ XModMap parse_xmodmap(std::istream& is)
         if (cmd == "Shift_L" || cmd == "Shift_R")
           res.shifts.insert(kk);
         names.push_back(cmd);
-        res.rev[cmd] = kk;
+        if (res.rev.find(cmd) == res.rev.end())
+          res.rev[cmd] = kk;
       } while(true);
       if (names.empty())
         continue;
@@ -367,7 +379,9 @@ void GHID::output(input_event ev)
   }
   int res = write(fd, report, 8);
   if (res != 8)
-    throw std::runtime_error("report write failed");
+  {
+    std::cerr << "report write failed" << std::endl;
+  }
 }
 
 void output(input_event ev)
@@ -398,7 +412,6 @@ int main(int argc, char** argv)
   State s = State{0, 0, 0, 0, 0, 0, 0, 0, target, effective};
   while (true)
   {
-    std::cerr << "running" << std::endl;
     struct input_event ev[64];
     int rd;
     if ((rd = read (fd, ev, size * 64)) < size)
