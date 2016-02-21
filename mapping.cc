@@ -24,6 +24,8 @@ int linux_to_x[] = {
   
 };*/
 
+std::string readBuffer;
+
 int linux_to_x(int k)
 {
   return k + 8;
@@ -50,7 +52,7 @@ std::map<int, int> ltog = {
 
   {KEY_MINUS, 45}, {KEY_EQUAL, 46}, {KEY_LEFTBRACE, 47}, {KEY_RIGHTBRACE, 48},
   {KEY_BACKSLASH, 49}, {KEY_SEMICOLON, 51}, {KEY_APOSTROPHE, 52},
-  {KEY_GRAVE, 53}, {KEY_COMMA, 54}, {KEY_DOT, 55},
+  {KEY_GRAVE, 53}, {KEY_COMMA, 54}, {KEY_DOT, 55}, {KEY_SLASH, 56},
   {KEY_SYSRQ, 70}, {KEY_SCROLLLOCK, 71}, {KEY_PAUSE, 72},
   {KEY_INSERT, 73}, {KEY_HOME, 74}, {KEY_END, 77},
   {KEY_KPSLASH, 84}, { KEY_KPASTERISK, 85}, {KEY_KPMINUS, 86},
@@ -79,6 +81,22 @@ int linux_to_g(int i)
     return it->second;
   return UNKNOWN_LKEY;
 }
+
+const char* ascii_to_xname[128] = {
+"","","","","","","","","BackSpace","Tab",
+"Return","","","","","","","","","",
+"","","","","","","","","","",
+"","","space", "exclam","quotedbl", "numbersign", "dollar", "percent", "ampersand", "apostrophe",
+"parenleft", "parenright", "asterisk", "plus", "comma", "minus", "period", "slash", """", "1",
+"2","3","4","5","6","7","8","9", "colon", "semicolon",
+"less", "equal", "greater","question","at","A","B","C","D","E",
+"F","G","H","I","J","K","L","M","N","O",
+"P","Q","R","S","T","U","V","W","X","Y",
+"Z", "bracketleft","backslash","bracketright", "dead_circunflex","underscore","backquote","a","b","c",
+"d","e","f","g","h","i","j","k","l","m",
+"n","o","p","q","r","s","t","u","v","w",
+"x","y","z","braceleft","bar","braceright","asciitilde",""
+};
 
 enum class ModsL
 {
@@ -193,7 +211,7 @@ struct PKey
   bool caps;
 };
 
-PKey mapKey(PKey const& in, XModMap const& target, XModMap const& effective)
+PKey mapKey(PKey const& in, XModMap const& target, XModMap const& effective, bool down)
 {
   int xkeycode = linux_to_x(in.lkeycode);
   int idx = (in.shift ? 1 : 0) + (in.mode ? 2 : 0);
@@ -201,6 +219,15 @@ PKey mapKey(PKey const& in, XModMap const& target, XModMap const& effective)
   std::string keyname = target.lookup(xkeycode, idx);
   if (keyname.empty())
     return PKey{false, false, -1};
+  // store into ascii buffer
+  if (down)
+  {
+    auto ahit = std::find(ascii_to_xname, ascii_to_xname + 128, keyname);
+    if (ahit != ascii_to_xname + 128)
+      readBuffer += ahit - ascii_to_xname;
+    else
+      std::cerr << "could not askii-map " << keyname << std::endl;
+  }
   // lookup in effective mapping how to produce it
   auto it = effective.rev.find(keyname);
   bool caps = false;
@@ -238,6 +265,45 @@ struct State
 
 typedef std::function<void(Event)> Emitter;
 
+void step2(State& s, Event ev, Emitter emitter, PKey res);
+
+
+void writeString(State& s, Emitter emitter, std::string const& str)
+{
+  for (auto const& c: str)
+  {
+    if (c < 0)
+    {
+      std::cerr << "char out of range" << std::endl;
+      continue;
+    }
+    if (strlen(ascii_to_xname[c]) == 0)
+    {
+      std::cerr << "unknown char " << (int)c << std::endl;
+      continue;
+    }
+    std::string xname = ascii_to_xname[c];
+    auto it = s.effective.rev.find(xname);
+    if (it == s.effective.rev.end())
+    {
+      std::cerr << "no way to produce " << xname << std::endl;
+      continue;
+    }
+    auto const& keys = s.effective.keycodes[it->second];
+    auto kit = std::find(keys.begin(), keys.end(), xname);
+    if (kit == keys.end())
+    {
+      std::cerr << "inconsistency 3" << std::endl;
+      continue;
+    }
+    int idx = kit - keys.begin();
+    PKey pk{idx%2, idx/2 > 0, x_to_linux(it->second)};
+    step2(s, Event{Action::down, pk.lkeycode}, emitter, pk);
+    step2(s, Event{Action::up, pk.lkeycode}, emitter, pk);
+  }
+}
+
+
 void step(State& s, Event ev, Emitter emitter)
 {
   bool ismod = false;
@@ -254,9 +320,14 @@ void step(State& s, Event ev, Emitter emitter)
     s.shift = (ev.action == Action::up) ? 0 : ev.lcode;
   if (ismod)
     return;
-  PKey res = mapKey(PKey{s.shift, s.meta, ev.lcode}, s.target, s.effective);
+  PKey res = mapKey(PKey{s.shift, s.meta, ev.lcode}, s.target, s.effective,
+                    ev.action == Action::down);
   std::cerr << ev.lcode << ',' << !!s.shift << ',' << !!s.meta
    << " => " << res.lkeycode << ',' << res.shift << ',' << res.mode << ',' << res.caps << std::endl;
+  step2(s, ev, emitter, res);
+}
+void step2(State& s, Event ev, Emitter emitter, PKey res)
+{
   if (res.lkeycode > 0)
   {
     if (ev.action == Action::up)
@@ -390,6 +461,18 @@ void output(input_event ev)
     std::cout << "=>" << (int)ev.type << ' ' << (int)ev.code << ' ' << ev.value << std::endl;
 }
 
+void processCommands(State& s, Emitter emitter, std::string& readBuffer)
+{
+  std::cerr << "rb: " << readBuffer << std::endl;
+  if (readBuffer.find("hkrhkr") != readBuffer.npos)
+  {
+    writeString(s, emitter, "Hardware keyboard remapping is live!\n");
+    readBuffer.clear();
+  }
+  if (readBuffer.size() > 10)
+    readBuffer = readBuffer.substr(readBuffer.size()-10);
+}
+
 int main(int argc, char** argv)
 {
   int fd = open(argv[1], O_RDONLY);
@@ -419,6 +502,13 @@ int main(int argc, char** argv)
       perror("read()");
       exit(1);
     }
+    Emitter emitter = [&](Event ev) {
+            input_event ie;
+            ie.type = (int)Type::keyEvent;
+            ie.code = ev.lcode;
+            ie.value = (int)ev.action;
+            gadget.output(ie);
+        };
     for (int i=0; i*size < rd; ++i)
     {
       if (ev[i].type != (int)Type::keyEvent)
@@ -426,14 +516,9 @@ int main(int argc, char** argv)
       else
       {
         std::cerr << "<=" << (int)ev[i].type << ' ' << (int)ev[i].code << ' ' << ev[i].value << std::endl;
-        step(s, Event {(Action)ev[i].value, ev[i].code}, [&](Event ev) {
-            input_event ie;
-            ie.type = (int)Type::keyEvent;
-            ie.code = ev.lcode;
-            ie.value = (int)ev.action;
-            gadget.output(ie);
-        });
+        step(s, Event {(Action)ev[i].value, ev[i].code}, emitter);
       }
+      processCommands(s, emitter, readBuffer);
     }
   }
 }
