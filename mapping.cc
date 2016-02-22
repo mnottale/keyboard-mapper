@@ -25,6 +25,7 @@ int linux_to_x[] = {
 };*/
 
 std::string readBuffer;
+bool enter_shell = false;
 
 int linux_to_x(int k)
 {
@@ -464,13 +465,113 @@ void output(input_event ev)
 void processCommands(State& s, Emitter emitter, std::string& readBuffer)
 {
   std::cerr << "rb: " << readBuffer << std::endl;
+  if (readBuffer.find("hkrshell\n") != readBuffer.npos)
+  {
+    writeString(s, emitter, "Entering shell mode...\n");
+    readBuffer.clear();
+    enter_shell = true;
+  }
   if (readBuffer.find("hkrhkr") != readBuffer.npos)
   {
-    writeString(s, emitter, "Hardware keyboard remapping is live!\n");
+    writeString(s, emitter, "\b\b\b\b\b\bHardware keyboard remapping is live!\n");
     readBuffer.clear();
   }
   if (readBuffer.size() > 10)
     readBuffer = readBuffer.substr(readBuffer.size()-10);
+}
+
+int shell_pid = 0;
+void shell_start(int res[2])
+{
+  int shellin[2];
+  int shellout[2];
+  // read, wrtie
+  pipe(shellin);
+  pipe(shellout);
+  int pid = fork();
+  if (!pid)
+  {
+    dup2(shellin[0], 0);
+    dup2(shellout[1], 1);
+    dup2(shellout[1], 2);
+    close(shellin[1]);
+    close(shellout[0]);
+    execl("/bin/sh", "sh", 0);
+    std::cerr << "something went wrong spamming shell" << std::endl;
+    exit(0);
+  }
+  close(shellout[1]);
+  close(shellin[0]);
+  shell_pid = pid;
+  res[0] = shellout[0];
+  res[1] = shellin[1];
+}
+
+int do_select(int fd1, int fd2)
+{
+  fd_set rfds;
+  struct timeval tv;
+  int retval;
+  FD_ZERO(&rfds);
+  FD_SET(fd1, &rfds);
+  FD_SET(fd2, &rfds);
+  retval = select(std::max(fd1, fd2)+1, &rfds, 0,0,0);
+  int res;
+  if (FD_ISSET(fd1, &rfds))
+    res |= 1;
+  if (FD_ISSET(fd2, &rfds))
+    res |= 2;
+  return res;
+}
+
+void shell_loop(int kbd_fd, GHID& gadget, State& s)
+{
+  Emitter emitter = [&](Event ev) {
+    input_event ie;
+    ie.type = (int)Type::keyEvent;
+    ie.code = ev.lcode;
+    ie.value = (int)ev.action;
+    gadget.output(ie);
+  };
+  int shell_fds[2];
+  shell_start(shell_fds);
+  while (true)
+  {
+    int sel = do_select(kbd_fd, shell_fds[0]);
+    if (sel & 1)
+    {
+      struct input_event ev[64];
+      int rd;
+      if ((rd = read (kbd_fd, ev, sizeof(input_event) * 64)) < sizeof(input_event))
+      {
+        perror("read()");
+        exit(1);
+      }
+      
+      for (int i=0; i*sizeof(input_event) < rd; ++i)
+      {
+        if (ev[i].type != (int)Type::keyEvent)
+          continue;
+        step(s, Event {(Action)ev[i].value, ev[i].code}, [&](Event){});
+        while (!readBuffer.empty())
+        {
+          write(shell_fds[1], readBuffer.c_str(), 1);
+          readBuffer = readBuffer.substr(1);
+        }
+      }
+    }
+    if (sel & 2)
+    {
+      char data[1024];
+      int len = read(shell_fds[0], data, 1024);
+      if (len <= 0)
+      {
+        std::cerr << "shell read error, terminating" << std::endl;
+        return;
+      }
+      writeString(s, emitter, std::string(data, len));
+    }
+  }
 }
 
 int main(int argc, char** argv)
@@ -493,6 +594,13 @@ int main(int argc, char** argv)
   }
   GHID gadget(argv[4]);
   State s = State{0, 0, 0, 0, 0, 0, 0, 0, target, effective};
+  Emitter emitter = [&](Event ev) {
+    input_event ie;
+    ie.type = (int)Type::keyEvent;
+    ie.code = ev.lcode;
+    ie.value = (int)ev.action;
+    gadget.output(ie);
+  };
   while (true)
   {
     struct input_event ev[64];
@@ -502,13 +610,7 @@ int main(int argc, char** argv)
       perror("read()");
       exit(1);
     }
-    Emitter emitter = [&](Event ev) {
-            input_event ie;
-            ie.type = (int)Type::keyEvent;
-            ie.code = ev.lcode;
-            ie.value = (int)ev.action;
-            gadget.output(ie);
-        };
+
     for (int i=0; i*size < rd; ++i)
     {
       if (ev[i].type != (int)Type::keyEvent)
@@ -519,6 +621,11 @@ int main(int argc, char** argv)
         step(s, Event {(Action)ev[i].value, ev[i].code}, emitter);
       }
       processCommands(s, emitter, readBuffer);
+      if (enter_shell)
+      {
+        enter_shell = false;
+        shell_loop(fd, gadget, s);
+      }
     }
   }
 }
