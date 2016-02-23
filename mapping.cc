@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
+#include <signal.h>
 
 /*
 int linux_to_x[] = {
@@ -26,6 +27,8 @@ int linux_to_x[] = {
 
 std::string readBuffer;
 bool enter_shell = false;
+
+static const char CTRL_C = 4;
 
 int linux_to_x(int k)
 {
@@ -139,6 +142,7 @@ struct XModMap
   std::set<int> metas; // xcodes
   std::set<int> shifts;
   std::set<int> caps;
+  std::set<int> controls;
   std::string lookup(int code, int index) const
   {
     if (code >= keycodes.size())
@@ -187,6 +191,8 @@ XModMap parse_xmodmap(std::istream& is)
         }
         if (cmd == "Shift_L" || cmd == "Shift_R")
           res.shifts.insert(kk);
+        if (cmd == "Control_L" || cmd == "Control_R")
+          res.controls.insert(kk);
         names.push_back(cmd);
         if (res.rev.find(cmd) == res.rev.end())
           res.rev[cmd] = kk;
@@ -203,13 +209,14 @@ XModMap parse_xmodmap(std::istream& is)
 
 struct PKey
 {
-  PKey(bool s, bool m, int lk, bool caps = false)
-  : shift(s), mode(m), lkeycode(lk), caps(caps)
+  PKey(bool s, bool m, int lk, bool caps = false, bool ctrl=false)
+  : shift(s), mode(m), lkeycode(lk), caps(caps), ctrl(ctrl)
   {}
   bool shift;
   bool mode;
   int lkeycode; // kernel code
   bool caps;
+  bool ctrl;
 };
 
 PKey mapKey(PKey const& in, XModMap const& target, XModMap const& effective, bool down)
@@ -225,7 +232,16 @@ PKey mapKey(PKey const& in, XModMap const& target, XModMap const& effective, boo
   {
     auto ahit = std::find(ascii_to_xname, ascii_to_xname + 128, keyname);
     if (ahit != ascii_to_xname + 128)
-      readBuffer += ahit - ascii_to_xname;
+    {
+      char c = ahit - ascii_to_xname;
+      std::cerr << "inserting ascii " << (int)c << " " << in.ctrl << std::endl;
+      if (c == 'c' && in.ctrl)
+      {
+        readBuffer += CTRL_C;
+      }
+      else
+        readBuffer += c;
+    }
     else
       std::cerr << "could not askii-map " << keyname << std::endl;
   }
@@ -255,6 +271,7 @@ struct State
 {
   int meta; // meta lcode or 0 if up
   int shift; // shift lcode or 0 if not down
+  int ctrl;
   int dummyMeta;   // 0: no, -1: forced up, 1: forced down
   int dummyShift;
   int dummyCaps;
@@ -317,11 +334,18 @@ void step(State& s, Event ev, Emitter emitter)
   {
     s.meta = (ev.action == Action::up) ? 0 : ev.lcode;
   }
+  if (s.target.controls.find(linux_to_x(ev.lcode)) != s.target.controls.end())
+  {
+    s.ctrl = (ev.action == Action::up) ? 0 : ev.lcode;
+  }
   if (ev.lcode == (int)ModsL::lshift || ev.lcode == (int)ModsL::rshift)
     s.shift = (ev.action == Action::up) ? 0 : ev.lcode;
+  std::cerr << "mod state: " << s.meta << ' ' << s.shift << ' ' << s.ctrl << ' ' << std::endl;
+  //if (ev.lcode == (int)ModsL::rctrl || ev.lcode == (int)ModsL::lctrl)
+  //  s.ctrl = (ev.action == Action::up) ? 0 : ev.lcode;
   if (ismod)
     return;
-  PKey res = mapKey(PKey{s.shift, s.meta, ev.lcode}, s.target, s.effective,
+  PKey res = mapKey(PKey{s.shift, s.meta, ev.lcode, false, s.ctrl}, s.target, s.effective,
                     ev.action == Action::down);
   std::cerr << ev.lcode << ',' << !!s.shift << ',' << !!s.meta
    << " => " << res.lkeycode << ',' << res.shift << ',' << res.mode << ',' << res.caps << std::endl;
@@ -516,7 +540,7 @@ int do_select(int fd1, int fd2)
   FD_SET(fd1, &rfds);
   FD_SET(fd2, &rfds);
   retval = select(std::max(fd1, fd2)+1, &rfds, 0,0,0);
-  int res;
+  int res = 0;
   if (FD_ISSET(fd1, &rfds))
     res |= 1;
   if (FD_ISSET(fd2, &rfds))
@@ -537,7 +561,9 @@ void shell_loop(int kbd_fd, GHID& gadget, State& s)
   shell_start(shell_fds);
   while (true)
   {
+    std::cerr << "selecting" << std::endl;
     int sel = do_select(kbd_fd, shell_fds[0]);
+    std::cerr << "select " << sel << std::endl;
     if (sel & 1)
     {
       struct input_event ev[64];
@@ -555,7 +581,17 @@ void shell_loop(int kbd_fd, GHID& gadget, State& s)
         step(s, Event {(Action)ev[i].value, ev[i].code}, [&](Event){});
         while (!readBuffer.empty())
         {
-          write(shell_fds[1], readBuffer.c_str(), 1);
+          char c = readBuffer[0];
+          std::cerr << "to shell: " << (int)c << std::endl;
+          if (c == CTRL_C)
+          {
+            std::cerr << "interrupting shell" << std::endl;
+            system((std::string("egrep -H 'PPid:\\s")
+              + std::to_string(shell_pid)
+              + "' /proc/*/status |cut -d/ -f 3 |xargs kill 2").c_str());
+          }
+          else
+            write(shell_fds[1], &c, 1);
           readBuffer = readBuffer.substr(1);
         }
       }
@@ -569,6 +605,7 @@ void shell_loop(int kbd_fd, GHID& gadget, State& s)
         std::cerr << "shell read error, terminating" << std::endl;
         return;
       }
+      std::cerr << "from shell: " << std::string(data, len) << std::endl;
       writeString(s, emitter, std::string(data, len));
     }
   }
@@ -593,7 +630,7 @@ int main(int argc, char** argv)
     effective = parse_xmodmap(ifs);
   }
   GHID gadget(argv[4]);
-  State s = State{0, 0, 0, 0, 0, 0, 0, 0, target, effective};
+  State s = State{0, 0, 0, 0, 0, 0, 0, 0, 0, target, effective};
   Emitter emitter = [&](Event ev) {
     input_event ie;
     ie.type = (int)Type::keyEvent;
