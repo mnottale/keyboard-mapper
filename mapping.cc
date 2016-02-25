@@ -27,8 +27,15 @@ int linux_to_x[] = {
 
 std::string readBuffer;
 bool enter_shell = false;
+bool block_output = false;
 
 static const char CTRL_C = 4;
+static const char CTRL_D = 5;
+static const char XA_LEFT = 128;
+static const char XA_RIGHT = 129;
+static const char XA_UP = 130;
+static const char XA_DOWN = 131;
+static const char XA_BACKSPACE = 8;
 
 int linux_to_x(int k)
 {
@@ -86,7 +93,7 @@ int linux_to_g(int i)
   return UNKNOWN_LKEY;
 }
 
-const char* ascii_to_xname[128] = {
+const char* ascii_to_xname[132] = {
 "","","","","","","","","BackSpace","Tab",
 "Return","","","","","","","","","",
 "","","","","","","","","","",
@@ -99,7 +106,9 @@ const char* ascii_to_xname[128] = {
 "Z", "bracketleft","backslash","bracketright", "dead_circunflex","underscore","backquote","a","b","c",
 "d","e","f","g","h","i","j","k","l","m",
 "n","o","p","q","r","s","t","u","v","w",
-"x","y","z","braceleft","bar","braceright","asciitilde",""
+"x","y","z","braceleft","bar","braceright","asciitilde","",
+// Extra stuff
+"Left", "Right", "Up", "Down",
 };
 
 enum class ModsL
@@ -230,8 +239,8 @@ PKey mapKey(PKey const& in, XModMap const& target, XModMap const& effective, boo
   // store into ascii buffer
   if (down)
   {
-    auto ahit = std::find(ascii_to_xname, ascii_to_xname + 128, keyname);
-    if (ahit != ascii_to_xname + 128)
+    auto ahit = std::find(ascii_to_xname, ascii_to_xname + 132, keyname);
+    if (ahit != ascii_to_xname + 132)
     {
       char c = ahit - ascii_to_xname;
       std::cerr << "inserting ascii " << (int)c << " " << in.ctrl << std::endl;
@@ -288,9 +297,9 @@ void step2(State& s, Event ev, Emitter emitter, PKey res);
 
 void writeString(State& s, Emitter emitter, std::string const& str)
 {
-  for (auto const& c: str)
+  for (unsigned char c: str)
   {
-    if (c < 0)
+    if (c > 132)
     {
       std::cerr << "char out of range" << std::endl;
       continue;
@@ -349,7 +358,8 @@ void step(State& s, Event ev, Emitter emitter)
                     ev.action == Action::down);
   std::cerr << ev.lcode << ',' << !!s.shift << ',' << !!s.meta
    << " => " << res.lkeycode << ',' << res.shift << ',' << res.mode << ',' << res.caps << std::endl;
-  step2(s, ev, emitter, res);
+  if (!block_output)
+    step2(s, ev, emitter, res);
 }
 void step2(State& s, Event ev, Emitter emitter, PKey res)
 {
@@ -485,9 +495,72 @@ void output(input_event ev)
   if (ev.type == 1)
     std::cout << "=>" << (int)ev.type << ' ' << (int)ev.code << ' ' << ev.value << std::endl;
 }
+class Menu
+{
+public:
+  Menu(std::vector<std::string> const& entries)
+  : displayed(false)
+  , selection(0)
+  , entries(entries)
+  {}
+  // return -1 or selected entry
+  int step(std::string& readBuffer, State&s, Emitter& emitter)
+  {
+    std::string txt;
+    if (!displayed)
+    {
+      displayed = true;
+      txt = "\n";
+      for (auto const& e: entries)
+        txt += " " + e + "\n";
+      txt += std::string(entries.size(), XA_UP);
+      txt += XA_RIGHT;
+      txt += XA_BACKSPACE;
+      txt += '*';
+      txt += XA_LEFT;
+    }
+    int res = -1;
+    for (auto c: readBuffer)
+    {
+      if (c == XA_UP && selection > 0)
+      {
+        txt += std::string(1, XA_RIGHT) + XA_BACKSPACE + ' ' + XA_UP + XA_BACKSPACE + '*' + XA_LEFT;
+        selection--;
+      }
+      if (c == XA_DOWN && selection < entries.size()-1)
+      {
+        txt += std::string(1, XA_RIGHT) + XA_BACKSPACE + ' ' + XA_DOWN + XA_BACKSPACE + '*' + XA_LEFT;
+        selection++;
+      }
+      if (c == '\n')
+        res = selection;
+    }
+    readBuffer.clear();
+    if (!txt.empty())
+      writeString(s, emitter, txt);
+    return res;
+  }
+  bool displayed;
+  int selection;
+  std::vector<std::string> entries;
+};
+
+static Menu* liveMenu = nullptr;
 
 void processCommands(State& s, Emitter emitter, std::string& readBuffer)
 {
+  if (liveMenu)
+  {
+    int res = liveMenu->step(readBuffer, s, emitter);
+    if (res > 0)
+    {
+      std::cerr << "menu selected " << res << std::endl;
+      delete liveMenu;
+      liveMenu = nullptr;
+      block_output = false;
+    }
+    return;
+  }
   std::cerr << "rb: " << readBuffer << std::endl;
   if (readBuffer.find("hkrshell\n") != readBuffer.npos)
   {
@@ -495,10 +568,16 @@ void processCommands(State& s, Emitter emitter, std::string& readBuffer)
     readBuffer.clear();
     enter_shell = true;
   }
-  if (readBuffer.find("hkrhkr") != readBuffer.npos)
+  if (readBuffer.find("hkrping\n") != readBuffer.npos)
   {
     writeString(s, emitter, "\b\b\b\b\b\bHardware keyboard remapping is live!\n");
     readBuffer.clear();
+  }
+  if (readBuffer.find("hkrmenu\n") != readBuffer.npos)
+  {
+    readBuffer.clear();
+    liveMenu = new Menu({"canard", "coin", "option 3"});
+    block_output = true;
   }
   if (readBuffer.size() > 10)
     readBuffer = readBuffer.substr(readBuffer.size()-10);
