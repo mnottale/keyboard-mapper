@@ -27,7 +27,7 @@ int linux_to_x[] = {
 
 std::string readBuffer;
 bool enter_shell = false;
-bool block_output = false;
+int block_output = 0;
 
 static const char CTRL_C = 4;
 static const char CTRL_D = 5;
@@ -495,16 +495,83 @@ void output(input_event ev)
   if (ev.type == 1)
     std::cout << "=>" << (int)ev.type << ' ' << (int)ev.code << ' ' << ev.value << std::endl;
 }
-class Menu
+class Special
 {
 public:
-  Menu(std::vector<std::string> const& entries)
+  Special()
+  {
+    ++block_output;
+  }
+  virtual ~Special() {
+    --block_output;
+  }
+  // true = finished
+  virtual bool step(std::string& readBuffer, State&s, Emitter& emitter) = 0;
+};
+
+class Password: public Special
+{
+public:
+  Password(std::function<void(std::string)> res)
+  : rbPos(0)
+  , started(false)
+  , onResult(res)
+  {}
+  bool step(std::string& readBuffer, State&s, Emitter& emitter)
+  {
+    if (!started)
+    {
+      writeString(s, emitter, "password: ");
+      started = true;
+    }
+    for (int i = rbPos; i< readBuffer.size(); ++i)
+    {
+      unsigned char c = readBuffer[i];
+      if (c == XA_BACKSPACE)
+      {
+        if (i == 0)
+        {
+          readBuffer = readBuffer.substr(1);
+          --i;
+        }
+        else
+        {
+          readBuffer = readBuffer.substr(0, i-1) + readBuffer.substr(i+1);
+          i -= 2;
+          writeString(s, emitter, {XA_BACKSPACE});
+        }
+      }
+      else if (c == '\n')
+      {
+        onResult(readBuffer.substr(0, i));
+        readBuffer.clear();
+        return true;
+      }
+      else
+      {
+        writeString(s, emitter, "*");
+      }
+    }
+    rbPos = readBuffer.size();
+    return false;
+  }
+  int rbPos;
+  bool started;
+  std::string password;
+  std::function<void(std::string)> onResult;
+};
+
+class Menu: public Special
+{
+public:
+  Menu(std::vector<std::string> const& entries, std::function<void(int)> onRes)
   : displayed(false)
   , selection(0)
   , entries(entries)
+  , onResult(onRes)
   {}
   // return -1 or selected entry
-  int step(std::string& readBuffer, State&s, Emitter& emitter)
+  bool step(std::string& readBuffer, State&s, Emitter& emitter)
   {
     std::string txt;
     if (!displayed)
@@ -519,7 +586,7 @@ public:
       txt += '*';
       txt += XA_LEFT;
     }
-    int res = -1;
+    int res = false;
     for (auto c: readBuffer)
     {
       if (c == XA_UP && selection > 0)
@@ -533,7 +600,10 @@ public:
         selection++;
       }
       if (c == '\n')
-        res = selection;
+      {
+        res = true;
+        onResult(selection);
+      }
     }
     readBuffer.clear();
     if (!txt.empty())
@@ -543,21 +613,22 @@ public:
   bool displayed;
   int selection;
   std::vector<std::string> entries;
+  std::function<void(int)> onResult;
 };
 
-static Menu* liveMenu = nullptr;
+static std::shared_ptr<Special> liveSpecial;
 
 void processCommands(State& s, Emitter emitter, std::string& readBuffer)
 {
-  if (liveMenu)
+  if (liveSpecial)
   {
-    int res = liveMenu->step(readBuffer, s, emitter);
-    if (res > 0)
+    auto ptr = liveSpecial.get();
+    int res = liveSpecial->step(readBuffer, s, emitter);
+    if (res)
     {
       std::cerr << "menu selected " << res << std::endl;
-      delete liveMenu;
-      liveMenu = nullptr;
-      block_output = false;
+      if (liveSpecial.get() == ptr)
+        liveSpecial.reset();
     }
     return;
   }
@@ -570,14 +641,24 @@ void processCommands(State& s, Emitter emitter, std::string& readBuffer)
   }
   if (readBuffer.find("hkrping\n") != readBuffer.npos)
   {
-    writeString(s, emitter, "\b\b\b\b\b\bHardware keyboard remapping is live!\n");
+    writeString(s, emitter, "Hardware keyboard remapping is live!\n");
     readBuffer.clear();
   }
   if (readBuffer.find("hkrmenu\n") != readBuffer.npos)
   {
     readBuffer.clear();
-    liveMenu = new Menu({"canard", "coin", "option 3"});
-    block_output = true;
+    liveSpecial.reset(new Menu({"canard", "coin", "option 3"},
+      [pstate=&s, emitter](int idx) {
+        std::cerr << "index " << idx << " selected" << std::endl;
+      }
+      ));
+  }
+  if (readBuffer.find("hkrprompt\n") != readBuffer.npos)
+  {
+    readBuffer.clear();
+    liveSpecial.reset(new Password([&](std::string p) {
+        std::cerr << "password: '" << p << "'" << std::endl;
+    }));
   }
   if (readBuffer.size() > 10)
     readBuffer = readBuffer.substr(readBuffer.size()-10);
