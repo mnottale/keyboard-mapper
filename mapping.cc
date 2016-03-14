@@ -10,6 +10,12 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <signal.h>
+#include <sys/types.h>
+#include <dirent.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
 
 /*
 int linux_to_x[] = {
@@ -25,10 +31,17 @@ int linux_to_x[] = {
   
 };*/
 
+/* Last x keys typed on the keyboard in target mapping.
+ * Used for intercepting special commands.
+*/
 std::string readBuffer;
+// request entering shell mode
 bool enter_shell = false;
+// output is inhibited if nonzero
 int block_output = 0;
+char** argv;
 
+// nonprintable characters that are also added to readBuffer
 static const char CTRL_C = 4;
 static const char CTRL_D = 5;
 static const char XA_LEFT = 128;
@@ -53,6 +66,7 @@ int lg_alphabet[] = { KEY_A, KEY_B, KEY_C, KEY_D, KEY_E, KEY_F, KEY_G, KEY_H,
   KEY_I, KEY_J, KEY_K, KEY_L, KEY_M, KEY_N, KEY_O, KEY_P,
 KEY_Q, KEY_R, KEY_S, KEY_T, KEY_U, KEY_V, KEY_W, KEY_X, KEY_Y, KEY_Z};
 
+// linux code to gadget code translation
 std::map<int, int> ltog = {
   {KEY_ENTER, 0x28}, {KEY_ESC, 0x29}, {KEY_BACKSPACE, 0x2a}, {KEY_TAB, 0x2b},
   {KEY_SPACE, 0x2c}, { KEY_CAPSLOCK, 0x39},
@@ -93,6 +107,7 @@ int linux_to_g(int i)
   return UNKNOWN_LKEY;
 }
 
+// ascii code to X name (used by writeString()
 const char* ascii_to_xname[132] = {
 "","","","","","","","","BackSpace","Tab",
 "Return","","","","","","","","","",
@@ -165,6 +180,149 @@ struct XModMap
   };
 };
 
+std::string readfile(std::string const& path)
+{
+  std::ifstream ifs(path);
+  std::stringstream ss;
+  ss << ifs.rdbuf();
+  return ss.str();
+}
+
+void writefile(std::string const& path, std::string const& content)
+{
+  std::ofstream ofs(path);
+  std::stringstream ss(content);
+  ofs << ss.rdbuf();
+}
+
+void copy_file(std::string const& src, std::string const& dst)
+{
+  std::ifstream ifs(src);
+  std::ofstream ofs(dst);
+  ofs << ifs.rdbuf();
+}
+
+
+void copy_to_massstorage(std::string const& file)
+{
+  if (mount("massstorage", "/mnt/ms", "vfat", 0, "loop,offset=4096"))
+  {
+    perror("mount");
+    return;
+  }
+  copy_file(file, "/mnt/ms/" + file);
+  umount("/mnt/ms");
+}
+
+void updateconf(std::string key, std::string value)
+{
+  auto conf = readfile("config.txt");
+  auto idx = conf.find("\n" + key + ":");
+  if (idx == conf.npos)
+  {
+    conf += key + ": " + value + "\n";
+  }
+  else
+  {
+    auto idx2 = conf.find("\n", idx+1);
+    if (idx2 == conf.npos)
+      idx2 = conf.size();
+    conf = conf.substr(0, idx + key.size()+2)
+      + value
+      + conf.substr(idx2);
+  }
+  writefile("config.txt", conf);
+  copy_to_massstorage("config.txt");
+}
+
+std::string execute(std::string const& cmd)
+{
+  auto f = popen(cmd.c_str(), "r");
+  if (!f)
+  {
+    perror("popen");
+    return "";
+  }
+  std::string res;
+  char buf[1024];
+  while (true)
+  {
+    auto sz = fread(buf, 1, 1024, f);
+    if (sz == 0)
+      break;
+    res += std::string(buf, sz);
+  }
+  pclose(f);
+  return res;
+}
+
+void copy_dir(std::string const& src, std::string const& dst)
+{
+  mkdir(dst.c_str(), 0660);
+  auto d = opendir(src.c_str());
+  if (!d)
+  {
+    perror("opendir");
+    return;
+  }
+  while (auto e = readdir(d))
+  {
+    copy_file(src + "/" + e->d_name, dst + "/" + e->d_name);
+  }
+  closedir(d);
+}
+
+// import binary and config from loop gadget storage
+void import()
+{
+  mkdir("/mnt/ms", 0666);
+  if (mount("massstorage", "/mnt/ms", "vfat", 0, "loop,offset=4096"))
+  {
+    perror("mount");
+    return;
+  }
+  copy_dir("/mnt/ms/mappings", "mappings");
+  struct stat st;
+  auto md5_old = execute("md5 mapping");
+  
+  if (!stat("/mnt/ms/makegadget.sh", &st))
+    copy_file("/mnt/ms/makegadget.sh", "mapping");
+  if (!stat("/mnt/ms/config.txt", &st))
+    copy_file("/mnt/ms/config.txt", "config.txt");
+  if (!stat("/mnt/ms/mapping", &st))
+  {
+    auto md5_new = execute("md5 /mnt/ms/mapping");
+    if (md5_old != md5_new)
+    {
+      copy_file("/mnt/ms/mapping", "mapping");
+      std::cerr << "RE-EXEC" << std::endl;
+      umount("/mnt/ms");
+      execvp("mapping", argv);
+      perror("execvp");
+    }
+  }
+  umount("/mnt/ms");
+}
+
+// list mapping files present
+std::vector<std::string> list_mappings()
+{
+  DIR* d = opendir("mappings");
+  if (!d)
+  {
+    perror("opendir");
+    return {};
+  }
+  std::vector<std::string> res;
+  while (true)
+  {
+    auto ent = readdir(d);
+    if (!ent)
+      break;
+    res.push_back(ent->d_name);
+  }
+  closedir(d);
+}
 
 XModMap parse_xmodmap(std::istream& is)
 {
@@ -289,6 +447,8 @@ struct State
   int dummyCapsCode;
   XModMap target, effective;
 };
+
+State state;
 
 typedef std::function<void(Event)> Emitter;
 
@@ -495,7 +655,9 @@ void output(input_event ev)
   if (ev.type == 1)
     std::cout << "=>" << (int)ev.type << ' ' << (int)ev.code << ' ' << ev.value << std::endl;
 }
-class Special
+
+// Base class for special intercept handlers
+class Special: public std::enable_shared_from_this<Special>
 {
 public:
   Special()
@@ -506,9 +668,15 @@ public:
     --block_output;
   }
   // true = finished
-  virtual bool step(std::string& readBuffer, State&s, Emitter& emitter) = 0;
+  bool step(std::string& readBuffer, State&s, Emitter& emitter)
+  {
+    auto ptr = shared_from_this();
+    return _step(readBuffer, s, emitter);
+  }
+  virtual bool _step(std::string& readBuffer, State&s, Emitter& emitter) = 0;
 };
 
+// Prompt for a password, echos '*', terminated by '\n'
 class Password: public Special
 {
 public:
@@ -517,7 +685,7 @@ public:
   , started(false)
   , onResult(res)
   {}
-  bool step(std::string& readBuffer, State&s, Emitter& emitter)
+  bool _step(std::string& readBuffer, State&s, Emitter& emitter) override
   {
     if (!started)
     {
@@ -571,7 +739,7 @@ public:
   , onResult(onRes)
   {}
   // return -1 or selected entry
-  bool step(std::string& readBuffer, State&s, Emitter& emitter)
+  bool _step(std::string& readBuffer, State&s, Emitter& emitter) override
   {
     std::string txt;
     if (!displayed)
@@ -616,17 +784,37 @@ public:
   std::function<void(int)> onResult;
 };
 
+template<typename ... Args>
+class Dispatcher
+{
+public:
+  Dispatcher(Args... args)
+  : args {args...}
+  {
+  }
+  void operator()(int idx)
+  {
+    args[idx]();
+  }
+  std::vector<std::function<void()>> args;
+};
+template<typename ... Args>
+std::function<void(int)> dispatcher(Args... args)
+{
+  return Dispatcher<Args...>(args...);
+}
+
 static std::shared_ptr<Special> liveSpecial;
 
+// Called at each readBuffer change
 void processCommands(State& s, Emitter emitter, std::string& readBuffer)
 {
   if (liveSpecial)
   {
     auto ptr = liveSpecial.get();
-    int res = liveSpecial->step(readBuffer, s, emitter);
+    bool res = liveSpecial->step(readBuffer, s, emitter);
     if (res)
     {
-      std::cerr << "menu selected " << res << std::endl;
       if (liveSpecial.get() == ptr)
         liveSpecial.reset();
     }
@@ -644,14 +832,37 @@ void processCommands(State& s, Emitter emitter, std::string& readBuffer)
     writeString(s, emitter, "Hardware keyboard remapping is live!\n");
     readBuffer.clear();
   }
-  if (readBuffer.find("hkrmenu\n") != readBuffer.npos)
+  if (readBuffer.find("hkrmenu\n") != readBuffer.npos
+    || readBuffer.find({'\n', XA_BACKSPACE, '\n', XA_BACKSPACE}) != readBuffer.npos)
   {
     readBuffer.clear();
-    liveSpecial.reset(new Menu({"canard", "coin", "option 3"},
-      [pstate=&s, emitter](int idx) {
-        std::cerr << "index " << idx << " selected" << std::endl;
-      }
-      ));
+    liveSpecial.reset(new Menu({"effective mapping",
+                               "target mapping",
+                               "reload (UNMOUNT FIRST!)",
+                               "reboot"},
+      dispatcher(
+        [] {
+          liveSpecial.reset(new Menu(list_mappings(), [](int mapping) {
+              auto mappings = list_mappings();
+              std::ifstream ifs("mappings/" + mappings[mapping]);
+              state.effective = parse_xmodmap(ifs);
+          }));
+        },
+        [] {
+          liveSpecial.reset(new Menu(list_mappings(), [](int mapping) {
+              auto mappings = list_mappings();
+              std::ifstream ifs("mappings/" + mappings[mapping]);
+              state.target = parse_xmodmap(ifs);
+          }));
+        },
+        [] {
+          // FIXME: implement reload
+          import();
+        },
+        [] {
+          system("reboot");
+        }
+        )));
   }
   if (readBuffer.find("hkrprompt\n") != readBuffer.npos)
   {
@@ -665,6 +876,7 @@ void processCommands(State& s, Emitter emitter, std::string& readBuffer)
 }
 
 int shell_pid = 0;
+// enter shell mode
 void shell_start(int res[2])
 {
   int shellin[2];
@@ -771,8 +983,9 @@ void shell_loop(int kbd_fd, GHID& gadget, State& s)
   }
 }
 
-int main(int argc, char** argv)
+int main(int argc, char** argv_)
 {
+  argv = argv_;
   int fd = open(argv[1], O_RDONLY);
   char name[256];
   int size = sizeof (struct input_event);
@@ -790,7 +1003,7 @@ int main(int argc, char** argv)
     effective = parse_xmodmap(ifs);
   }
   GHID gadget(argv[4]);
-  State s = State{0, 0, 0, 0, 0, 0, 0, 0, 0, target, effective};
+  state = State{0, 0, 0, 0, 0, 0, 0, 0, 0, target, effective};
   Emitter emitter = [&](Event ev) {
     input_event ie;
     ie.type = (int)Type::keyEvent;
@@ -815,13 +1028,13 @@ int main(int argc, char** argv)
       else
       {
         std::cerr << "<=" << (int)ev[i].type << ' ' << (int)ev[i].code << ' ' << ev[i].value << std::endl;
-        step(s, Event {(Action)ev[i].value, ev[i].code}, emitter);
+        step(state, Event {(Action)ev[i].value, ev[i].code}, emitter);
       }
-      processCommands(s, emitter, readBuffer);
+      processCommands(state, emitter, readBuffer);
       if (enter_shell)
       {
         enter_shell = false;
-        shell_loop(fd, gadget, s);
+        shell_loop(fd, gadget, state);
       }
     }
   }
