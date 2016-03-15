@@ -1,0 +1,7 @@
+# target mapping (the one you want to type in)
+targetMapping: target.xmodmap
+# effective mapping (the one active on the computer)
+effectiveMapping: target.xmodmap
+# sequence of keys to access the menu
+menuSequence1: okkeyboard\n
+menuSequence2: \n\b\n\b

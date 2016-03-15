@@ -1,6 +1,7 @@
 #include <boost/algorithm/string.hpp>
 #include <set>
 #include <map>
+#include <unordered_map>
 #include <sstream>
 #include <fstream>
 
@@ -40,6 +41,8 @@ bool enter_shell = false;
 // output is inhibited if nonzero
 int block_output = 0;
 char** argv;
+typedef std::unordered_map<std::string, std::string> Config;
+Config configuration;
 
 // nonprintable characters that are also added to readBuffer
 static const char CTRL_C = 4;
@@ -197,6 +200,7 @@ void writefile(std::string const& path, std::string const& content)
 
 void copy_file(std::string const& src, std::string const& dst)
 {
+  unlink(dst.c_str());
   std::ifstream ifs(src);
   std::ofstream ofs(dst);
   ofs << ifs.rdbuf();
@@ -205,16 +209,62 @@ void copy_file(std::string const& src, std::string const& dst)
 
 void copy_to_massstorage(std::string const& file)
 {
-  if (mount("massstorage", "/mnt/ms", "vfat", 0, "loop,offset=4096"))
+  system("mount -o loop,offset=4096 massstorage /mnt/ms");
+  /*if (mount("massstorage", "/mnt/ms", "vfat", 0, "loop,offset=4096"))
   {
     perror("mount");
     return;
-  }
+  }*/
   copy_file(file, "/mnt/ms/" + file);
   umount("/mnt/ms");
 }
 
-void updateconf(std::string key, std::string value)
+std::string unescape(std::string const& in)
+{
+  std::string res;
+  for (int i=0; i<in.size(); ++i)
+  {
+    if (in[i] == '\\')
+    {
+      if (i == in.size()-1)
+        res += '\\';
+      else
+      {
+        switch(in[++i])
+        {
+        case 'n': res += '\n'; break;
+        case 'b': res += XA_BACKSPACE; break;
+        }
+      }
+    }
+    else
+      res += in[i];
+  }
+  return res;
+}
+
+Config load_configuration()
+{
+  Config c;
+  std::ifstream ifs("config.txt");
+  while(!ifs.eof())
+  {
+    std::string line;
+    std::getline(ifs, line);
+    if (line.empty() || line[0] == '#')
+      continue;
+    auto p = line.find(':');
+    if (p == line.npos)
+      continue;
+    std::string val = line.substr(p+1);
+    boost::algorithm::trim_left(val);
+    c[line.substr(0, p)] = unescape(val);
+    std::cerr << line.substr(0, p) << " -> " << line.substr(p+1) << std::endl;
+  }
+  return c;
+}
+
+void updateconf(std::string const& key, std::string const& value)
 {
   auto conf = readfile("config.txt");
   auto idx = conf.find("\n" + key + ":");
@@ -276,14 +326,16 @@ void copy_dir(std::string const& src, std::string const& dst)
 void import()
 {
   mkdir("/mnt/ms", 0666);
+  system("mount -o loop,offset=4096 massstorage /mnt/ms");
+  /*
   if (mount("massstorage", "/mnt/ms", "vfat", 0, "loop,offset=4096"))
   {
     perror("mount");
     return;
-  }
+  }*/
   copy_dir("/mnt/ms/mappings", "mappings");
   struct stat st;
-  auto md5_old = execute("md5 mapping");
+  auto md5_old = execute("md5sum mapping");
   
   if (!stat("/mnt/ms/makegadget.sh", &st))
     copy_file("/mnt/ms/makegadget.sh", "mapping");
@@ -291,14 +343,15 @@ void import()
     copy_file("/mnt/ms/config.txt", "config.txt");
   if (!stat("/mnt/ms/mapping", &st))
   {
-    auto md5_new = execute("md5 /mnt/ms/mapping");
+    auto md5_new = execute("cd /mnt/ms && md5sum mapping");
+    std::cerr << md5_old << " VS " << md5_new << std::endl;
     if (md5_old != md5_new)
     {
       copy_file("/mnt/ms/mapping", "mapping");
       std::cerr << "RE-EXEC" << std::endl;
       umount("/mnt/ms");
-      execvp("mapping", argv);
-      perror("execvp");
+      execv("./mapping", argv);
+      perror("execv");
     }
   }
   umount("/mnt/ms");
@@ -322,6 +375,7 @@ std::vector<std::string> list_mappings()
     res.push_back(ent->d_name);
   }
   closedir(d);
+  return res;
 }
 
 XModMap parse_xmodmap(std::istream& is)
@@ -806,6 +860,23 @@ std::function<void(int)> dispatcher(Args... args)
 
 static std::shared_ptr<Special> liveSpecial;
 
+bool enter_main_menu(std::string const& s)
+{
+  if (readBuffer.find("hkrmenu\n") != readBuffer.npos)
+    return true;
+  int i = 1;
+  for (;; ++i)
+  {
+    if (configuration.find("menuSequence" + std::to_string(i)) != configuration.end())
+    {
+      if (readBuffer.find(configuration.at("menuSequence" + std::to_string(i))) != readBuffer.npos)
+        return true;
+    }
+    else
+      return false;
+  }
+}
+
 // Called at each readBuffer change
 void processCommands(State& s, Emitter emitter, std::string& readBuffer)
 {
@@ -832,8 +903,7 @@ void processCommands(State& s, Emitter emitter, std::string& readBuffer)
     writeString(s, emitter, "Hardware keyboard remapping is live!\n");
     readBuffer.clear();
   }
-  if (readBuffer.find("hkrmenu\n") != readBuffer.npos
-    || readBuffer.find({'\n', XA_BACKSPACE, '\n', XA_BACKSPACE}) != readBuffer.npos)
+  if (enter_main_menu(readBuffer))
   {
     readBuffer.clear();
     liveSpecial.reset(new Menu({"effective mapping",
@@ -846,6 +916,7 @@ void processCommands(State& s, Emitter emitter, std::string& readBuffer)
               auto mappings = list_mappings();
               std::ifstream ifs("mappings/" + mappings[mapping]);
               state.effective = parse_xmodmap(ifs);
+              updateconf("effectiveMapping", mappings[mapping]);
           }));
         },
         [] {
@@ -853,11 +924,13 @@ void processCommands(State& s, Emitter emitter, std::string& readBuffer)
               auto mappings = list_mappings();
               std::ifstream ifs("mappings/" + mappings[mapping]);
               state.target = parse_xmodmap(ifs);
+              updateconf("targetMapping", mappings[mapping]);
           }));
         },
         [] {
-          // FIXME: implement reload
-          import();
+          std::cerr << "EXEC " << std::endl;
+          execv("./mapping", argv);
+          perror("execv");
         },
         [] {
           system("reboot");
@@ -986,6 +1059,8 @@ void shell_loop(int kbd_fd, GHID& gadget, State& s)
 int main(int argc, char** argv_)
 {
   argv = argv_;
+  import();
+  configuration = load_configuration();
   int fd = open(argv[1], O_RDONLY);
   char name[256];
   int size = sizeof (struct input_event);
@@ -993,16 +1068,16 @@ int main(int argc, char** argv_)
   printf("Reading From : %s\n", name);
   XModMap target, effective;
   {
-    std::ifstream ifs(argv[2]);
+    std::ifstream ifs("mappings/" + configuration["targetMapping"]);
     target = parse_xmodmap(ifs);
     for (auto m: target.metas)
       std::cerr << "meta " << m << std::endl;
   }
   {
-    std::ifstream ifs(argv[3]);
+    std::ifstream ifs("mappings/"  + configuration["effectiveMapping"]);
     effective = parse_xmodmap(ifs);
   }
-  GHID gadget(argv[4]);
+  GHID gadget(argv[2]);
   state = State{0, 0, 0, 0, 0, 0, 0, 0, 0, target, effective};
   Emitter emitter = [&](Event ev) {
     input_event ie;

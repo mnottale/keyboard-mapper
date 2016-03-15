@@ -74,7 +74,7 @@ systemctl start getty@ttyGS0.service
 
 
 # Start
-./mapping.i586 /dev/input/by-id/*-kbd  target.xmodmap fr.xmodmap /dev/hidg0
+#./mapping.i586 /dev/input/by-id/*-kbd  target.xmodmap fr.xmodmap /dev/hidg0
 
 
 # Info: mounting the massstorage
