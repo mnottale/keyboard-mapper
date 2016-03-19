@@ -17,7 +17,10 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-
+/*
+TODO:
+-robustify disconnect: Keyboard
+*/
 /*
 int linux_to_x[] = {
   0, 9,
@@ -357,10 +360,9 @@ void import()
   umount("/mnt/ms");
 }
 
-// list mapping files present
-std::vector<std::string> list_mappings()
+std::vector<std::string> list_directory(std::string const& path)
 {
-  DIR* d = opendir("mappings");
+  DIR* d = opendir(path.c_str());
   if (!d)
   {
     perror("opendir");
@@ -377,6 +379,12 @@ std::vector<std::string> list_mappings()
   closedir(d);
   return res;
 }
+
+std::vector<std::string> list_mappings()
+{
+  return list_directory("mappings");
+}
+
 
 XModMap parse_xmodmap(std::istream& is)
 {
@@ -1056,12 +1064,33 @@ void shell_loop(int kbd_fd, GHID& gadget, State& s)
   }
 }
 
+int open_keyboard()
+{
+  while (true)
+  {
+    auto inputs = list_directory("/dev/input/by-id");
+    for (auto i: inputs)
+    {
+      if (i.size() >= 3 & i.find("kbd") == i.size() - 3)
+      {
+        auto f = "/dev/input/by-id/" + i;
+        std::cerr << "found keyboard at " << f << std::endl;
+        int fd = open(f.c_str(), O_RDONLY);
+        if (fd >= 0)
+          return fd;
+      }
+    }
+    std::cerr << "waiting for keyboard..." << std::endl;
+    usleep(500000);
+  }
+}
+
 int main(int argc, char** argv_)
 {
   argv = argv_;
   import();
   configuration = load_configuration();
-  int fd = open(argv[1], O_RDONLY);
+  int fd = open_keyboard();
   char name[256];
   int size = sizeof (struct input_event);
   ioctl (fd, EVIOCGNAME (sizeof (name)), name);
@@ -1077,7 +1106,7 @@ int main(int argc, char** argv_)
     std::ifstream ifs("mappings/"  + configuration["effectiveMapping"]);
     effective = parse_xmodmap(ifs);
   }
-  GHID gadget(argv[2]);
+  GHID gadget("/dev/hidg0");
   state = State{0, 0, 0, 0, 0, 0, 0, 0, 0, target, effective};
   Emitter emitter = [&](Event ev) {
     input_event ie;
@@ -1090,10 +1119,10 @@ int main(int argc, char** argv_)
   {
     struct input_event ev[64];
     int rd;
-    if ((rd = read (fd, ev, size * 64)) < size)
+    while ((rd = read (fd, ev, size * 64)) < size)
     {
       perror("read()");
-      exit(1);
+      fd = open_keyboard();
     }
 
     for (int i=0; i*size < rd; ++i)
