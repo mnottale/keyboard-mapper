@@ -1,5 +1,15 @@
 #! /bin/sh
 
+# pick from storage hid tty
+config="storage hid"
+if ! test -z "$1"; then
+  config=$1
+fi
+
+echo "Enabling $config"
+enabled() {
+  echo $config | grep -q $1
+}
 
 # fails on the busybox shell, wrong number of \\ ?
 #descriptor=05010906a101050719e029e71500250175019508810295017508810395057501050819012905910295017503910395067508150025650507190029658100c0
@@ -36,16 +46,20 @@ echo "Conf 1" > configs/c.1/strings/0x409/configuration
 echo 120 > configs/c.1/MaxPower
 
 # HID keyboard
-mkdir functions/hid.usb0
-echo 1 > functions/hid.usb0/protocol
-echo 1 > functions/hid.usb0/subclass
-echo 8 > functions/hid.usb0/report_length
-cat $mydir/my_report_desc > functions/hid.usb0/report_desc
-ln -s functions/hid.usb0 configs/c.1
+if enabled hid; then
+  mkdir functions/hid.usb0
+  echo 1 > functions/hid.usb0/protocol
+  echo 1 > functions/hid.usb0/subclass
+  echo 8 > functions/hid.usb0/report_length
+  cat $mydir/my_report_desc > functions/hid.usb0/report_desc
+  ln -s functions/hid.usb0 configs/c.1
+fi
 
 # SERIAL
-mkdir -p functions/acm.usb0
-ln -s functions/acm.usb0 configs/c.1/
+if enabled tty; then
+  mkdir -p functions/acm.usb0
+  ln -s functions/acm.usb0 configs/c.1/
+fi
 
 #ETHERNET
 #mkdir -p functions/ecm.usb0
@@ -57,13 +71,15 @@ ln -s functions/acm.usb0 configs/c.1/
 #ln -s functions/ecm.usb0 configs/c.1/
 
 #MASS STORAGE
-mkdir -p functions/mass_storage.usb0
-echo 1 > functions/mass_storage.usb0/stall
-echo 0 > functions/mass_storage.usb0/lun.0/cdrom
-echo 0 > functions/mass_storage.usb0/lun.0/ro
-echo 0 > functions/mass_storage.usb0/lun.0/nofua
-echo /media/realroot/keyboard/massstorage > functions/mass_storage.usb0/lun.0/file
-ln -s functions/mass_storage.usb0 configs/c.1/
+if enabled storage; then
+  mkdir -p functions/mass_storage.usb0
+  echo 1 > functions/mass_storage.usb0/stall
+  echo 0 > functions/mass_storage.usb0/lun.0/cdrom
+  echo 0 > functions/mass_storage.usb0/lun.0/ro
+  echo 0 > functions/mass_storage.usb0/lun.0/nofua
+  echo /media/realroot/keyboard/massstorage > functions/mass_storage.usb0/lun.0/file
+  ln -s functions/mass_storage.usb0 configs/c.1/
+fi
 
 # ENABLE
 echo 0000:00:14.2 > UDC #/sys/class/udc
