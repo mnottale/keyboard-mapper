@@ -1088,6 +1088,17 @@ int open_keyboard()
 int main(int argc, char** argv_)
 {
   argv = argv_;
+  struct stat st;
+  if (stat("/dev/hidg0", &st) != 0)
+  {
+    std::cerr << "initialize gadget" << std::endl;
+    system("./makegadget.sh");
+    if (stat("/dev/hidg0", &st) != 0)
+    {
+      std::cerr << "Gadget initialization failure" << std::endl;
+      return 1;
+    }
+  }
   import();
   configuration = load_configuration();
   int fd = open_keyboard();
