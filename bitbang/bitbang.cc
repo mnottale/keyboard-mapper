@@ -1,5 +1,6 @@
 #include <bitbang.hh>
 #include <cstring>
+#include <iostream>
 #include <sys/mman.h>
 
 
@@ -15,6 +16,13 @@ BitBang::BitBang(std::string const& gpioDriver,
     throw std::runtime_error("Only 8 bit bus is supported");
   std::thread t([this, writer] { if (writer) loop_writer(); else loop_reader();});
   t.detach();
+}
+
+BitBang::~BitBang()
+{
+  exit = 1;
+  while (exit != 2)
+    gpio->usleep(50000);
 }
 
 void BitBang::realtime()
@@ -47,6 +55,7 @@ void BitBang::loop_writer()
     for (auto c: b)
     {
       // wait for reader
+      //std::cerr << "wait for reader" << std::endl;
       int expect = 1 - gpio->get(ctrlout);
       while (gpio->get(ctrlin) != expect)
       {
@@ -57,6 +66,7 @@ void BitBang::loop_writer()
           return;
         }
       }
+      //std::cerr << "transmiting" << std::endl;
       for (int i=0; i < 8; ++i)
         gpio->set(config.data_pins[i], (c & (1 << i)) ? true : false);
       gpio->set(ctrlout, expect);
@@ -82,6 +92,7 @@ void BitBang::loop_reader()
   int ctrlin = config.clock_pins[0];
   while (!exit)
   {
+    //std::cerr << "wait for writer" << std::endl;
     int expect = 1 - gpio->get(ctrlout);
     gpio->set(ctrlout, expect);
     while (gpio->get(ctrlin) != expect)
@@ -93,7 +104,8 @@ void BitBang::loop_reader()
         return;
       }
     }
-    unsigned char res;
+    //std::cerr << "reading" << std::endl;
+    unsigned char res = 0;
     for (int i=0; i < 8; ++i)
       res |= (gpio->get(config.data_pins[i]) ? 1 : 0) << i;
     {
@@ -124,6 +136,7 @@ int BitBang::read(unsigned char* data, int size, bool wait)
     auto to_read = std::min(size, (signed)buffer.size());
     memcpy(data, &buffer[0], to_read);
     memmove(&buffer[0], &buffer[to_read], buffer.size() - to_read);
+    buffer.resize(buffer.size() - to_read);
     if (!wait || size == to_read)
       return res + to_read;
     data += to_read;
