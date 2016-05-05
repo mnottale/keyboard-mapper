@@ -21,8 +21,12 @@ int main(int argc, char** argv)
   BitBang bb(argv[2], writer, config);
   if (writer)
   {
-    while (std::cin.good())
+    while (std::cin.good() && ! std::cin.eof())
     {
+      //std::string line;
+      //std::getline(std::cin, line);
+      //line += '\n';
+      //bb.write((const unsigned char*)line.data(), line.size(), true);
       unsigned char c = std::cin.get();
       bb.write(&c, 1, true);
     }
@@ -36,4 +40,5 @@ int main(int argc, char** argv)
       std::cout.write((char*)&c, 1);
     }
   }
+  exit(0);
 }
