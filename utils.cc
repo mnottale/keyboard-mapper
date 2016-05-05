@@ -13,6 +13,7 @@ enum class Action // code
   repeat = 2,
 };
 
+typedef std::unordered_map<std::string, std::string> Config;
 
 std::vector<std::string> list_directory(std::string const& path)
 {
@@ -54,3 +55,63 @@ int open_keyboard()
     usleep(500000);
   }
 }
+
+class Keyboard
+{
+public:
+  Keyboard(Config const& config)
+  : fd(-1)
+  {
+    if (config.find("keyboard") != config.end())
+    {
+      std::vector<std::string> c;
+      boost::algorithm::split(c, config.at("keyboard"), boost::is_any_of(" ,"));
+      BitBangConfig bconfig;
+      std::string bbdriver = c.at(0);
+      bconfig.speed = std::stoi(c.at(1));
+      bconfig.clock_pins[0] = std::stoi(c.at(2));
+      bconfig.clock_pins[1] = std::stoi(c.at(3));
+      for (int i=0; i<8; ++i)
+        bconfig.data_pins.push_back(std::stoi(c.at(4+i)));
+      bb.reset(new BitBang(bbdriver, false, bconfig));
+    }
+    else
+    {
+      fd = open_keyboard();
+      char name[256];
+      ioctl (fd, EVIOCGNAME (sizeof (name)), name);
+      printf("Reading From : %s\n", name);
+    }
+  }
+  int read(input_event* evs, int size)
+  {
+    if (bb)
+    {
+      unsigned char data[3];
+      while (true)
+      {
+        bb->read(data, 1, true);
+        if (data[0] == 0xFF)
+          break;
+      }
+      bb->read(data, 3, true);
+      evs[0].type = (int)Type::keyEvent;
+      evs[0].value = data[0];
+      evs[0].code = (data[1] << 8) + data[2];
+      return 1;
+    }
+    else
+    {
+      int evsize = sizeof(input_event);
+      int rd;
+      while ((rd = ::read (fd, evs, evsize * size)) < evsize)
+      {
+        perror("read()");
+        fd = open_keyboard();
+      }
+      return rd / evsize;
+    }
+  }
+  int fd;
+  std::unique_ptr<BitBang> bb;
+};

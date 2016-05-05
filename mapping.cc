@@ -17,7 +17,9 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include <bitbang/bitbang.hh>
 #include <utils.cc>
+
 /*
 TODO:
 -robustify disconnect: Keyboard
@@ -45,7 +47,6 @@ bool enter_shell = false;
 // output is inhibited if nonzero
 int block_output = 0;
 char** argv;
-typedef std::unordered_map<std::string, std::string> Config;
 Config configuration;
 
 // nonprintable characters that are also added to readBuffer
@@ -968,7 +969,7 @@ int do_select(int fd1, int fd2)
   return res;
 }
 
-void shell_loop(int kbd_fd, GHID& gadget, State& s)
+void shell_loop(Keyboard& kbd, GHID& gadget, State& s)
 {
   Emitter emitter = [&](Event ev) {
     input_event ie;
@@ -982,13 +983,13 @@ void shell_loop(int kbd_fd, GHID& gadget, State& s)
   while (true)
   {
     std::cerr << "selecting" << std::endl;
-    int sel = do_select(kbd_fd, shell_fds[0]);
+    int sel = do_select(kbd.fd, shell_fds[0]);
     std::cerr << "select " << sel << std::endl;
     if (sel & 1)
     {
       struct input_event ev[64];
       int rd;
-      if ((rd = read (kbd_fd, ev, sizeof(input_event) * 64)) < sizeof(input_event))
+      if ((rd = read (kbd.fd, ev, sizeof(input_event) * 64)) < sizeof(input_event))
       {
         perror("read()");
         exit(1);
@@ -1032,7 +1033,6 @@ void shell_loop(int kbd_fd, GHID& gadget, State& s)
 }
 
 
-
 int main(int argc, char** argv_)
 {
   argv = argv_;
@@ -1049,11 +1049,7 @@ int main(int argc, char** argv_)
   }
   import();
   configuration = load_configuration();
-  int fd = open_keyboard();
-  char name[256];
-  int size = sizeof (struct input_event);
-  ioctl (fd, EVIOCGNAME (sizeof (name)), name);
-  printf("Reading From : %s\n", name);
+  Keyboard kbd(configuration);
   XModMap target, effective;
   {
     std::ifstream ifs("mappings/" + configuration["targetMapping"]);
@@ -1077,14 +1073,8 @@ int main(int argc, char** argv_)
   while (true)
   {
     struct input_event ev[64];
-    int rd;
-    while ((rd = read (fd, ev, size * 64)) < size)
-    {
-      perror("read()");
-      fd = open_keyboard();
-    }
-
-    for (int i=0; i*size < rd; ++i)
+    int count = kbd.read(ev, 64);
+    for (int i=0; i < count; ++i)
     {
       if (ev[i].type != (int)Type::keyEvent)
         gadget.output(ev[i]);
@@ -1097,7 +1087,7 @@ int main(int argc, char** argv_)
       if (enter_shell)
       {
         enter_shell = false;
-        shell_loop(fd, gadget, state);
+        shell_loop(kbd, gadget, state);
       }
     }
   }
