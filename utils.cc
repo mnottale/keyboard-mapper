@@ -1,4 +1,28 @@
+#include <unordered_map>
+#include <vector>
 
+
+void split(std::vector<std::string>& res, std::string what,
+           std::string const& sep)
+{
+  while (!what.empty())
+  {
+    auto p = what.find_first_of(sep);
+    if (p == what.npos)
+    {
+      res.push_back(what);
+      return;
+    }
+    res.push_back(what.substr(0, p));
+    what = what.substr(p+1);
+  }
+}
+
+void trim(std::string& what, bool left = true, bool right = true)
+{
+  if (left) while (!what.empty() && what[0] == ' ') what = what.substr(1);
+  if (right) while (!what.empty() && what.back() == ' ') what = what.substr(0, what.size()-1);
+}
 
 enum class Type
 {
@@ -65,7 +89,7 @@ public:
     if (config.find("keyboard") != config.end())
     {
       std::vector<std::string> c;
-      boost::algorithm::split(c, config.at("keyboard"), boost::is_any_of(" ,"));
+      split(c, config.at("keyboard"), " ,");
       BitBangConfig bconfig;
       std::string bbdriver = c.at(0);
       bconfig.speed = std::stoi(c.at(1));

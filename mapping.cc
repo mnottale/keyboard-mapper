@@ -1,4 +1,3 @@
-#include <boost/algorithm/string.hpp>
 #include <set>
 #include <map>
 #include <unordered_map>
@@ -248,7 +247,7 @@ Config load_configuration()
     if (p == line.npos)
       continue;
     std::string val = line.substr(p+1);
-    boost::algorithm::trim_left(val);
+    trim(val, true, false);
     c[line.substr(0, p)] = unescape(val);
     std::cerr << line.substr(0, p) << " -> " << line.substr(p+1) << std::endl;
   }
@@ -363,7 +362,7 @@ XModMap parse_xmodmap(std::istream& is)
     std::getline(is, line);
     if (line.empty())
       continue;
-    boost::algorithm::trim(line);
+    trim(line);
     std::stringstream s(line);
     std::string cmd;
     s >> cmd;

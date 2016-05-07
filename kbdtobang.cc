@@ -1,4 +1,3 @@
-#include <boost/algorithm/string.hpp>
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -6,6 +5,7 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <linux/input.h>
+#include <iostream>
 
 #include <utils.cc>
 
@@ -15,7 +15,7 @@ int main(int argc, char** argv)
   std::string bbpins = argv[2];
   std::string bbspeed = argv[3];
   std::vector<std::string> vpins;
-  boost::algorithm::split(vpins, bbpins, boost::is_any_of(","));
+  split(vpins, bbpins, ", ");
   BitBangConfig cfg;
   cfg.clock_pins[0] = std::stoi(vpins.at(0));
   cfg.clock_pins[1] = std::stoi(vpins.at(1));
