@@ -59,6 +59,39 @@ Replace the comma-separated list of numbers by the 10 GPIO pin numbers you wired
 
 ### Software install, board 2 (to computer)
 
+Compile the main mapper software for the PI:
+
+    g++ -o mapping -std=c++11 -pthread -I. -Ibitbang mapping.cc \
+    bitbang/bitbang.cc bitbang/gpio.cc bitbang/gpio_sys.cc bitbang/gpio_dummy.cc
+
+Copy the following to a directory on the PI:
+
+- mapping: The program you just compiled
+- my_report_desc
+- makegadget.sh
+- config.txt
+- startmapping.sh
+- Mapping files (*.xmodmap). You can obtain a .xmodmap file for the current
+mapping by running 'xmodmap -pke'.
+
+Edit config.txt and add the following line:
+
+  keyboard: sys 1000 4,5,6,13,19,26,12,16,20,21
+
+The port number sequence must match what was given to kbdtobang.
+
+Also edit the two lines 'targetMapping' and 'effectiveMapping' with the
+.xmodmap files you want to use. targetMapping is the mapping you want to type
+in, and effectiveMapping is the mapping installed on the computer.
+
+Finally, run 'sudo crontab -e' and add the following line:
+
+    @reboot /home/pi/keyboard/startmapping.sh
+
+And that should be it, reboot the two boards, connect a keyboard to board 1,
+a computer to board 2, and start typing on your favorite mapping.
+
+
 
 
 
