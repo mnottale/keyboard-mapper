@@ -3,7 +3,9 @@
 #include <unordered_map>
 #include <sstream>
 #include <fstream>
-
+#include <iostream>
+#include <algorithm>
+#include <cstring>
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
