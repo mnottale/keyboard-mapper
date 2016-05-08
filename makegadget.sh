@@ -82,7 +82,7 @@ if enabled storage; then
 fi
 
 # ENABLE
-echo 0000:00:14.2 > UDC #/sys/class/udc
+echo 20980000.usb > UDC #/sys/class/udc
 
 # hmm, can we do this now before connection?
 systemctl enable getty@ttyGS0.service
