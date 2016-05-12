@@ -1,7 +1,7 @@
 #! /bin/sh
 
 # pick from storage hid tty
-config="storage hid"
+config="hid"
 if ! test -z "$1"; then
   config=$1
 fi
