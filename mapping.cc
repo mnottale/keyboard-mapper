@@ -201,7 +201,12 @@ void copy_file(std::string const& src, std::string const& dst)
 
 void copy_to_massstorage(std::string const& file)
 {
-  system("mount -o loop,offset=4096 massstorage /mnt/ms");
+  int res = system("mount -o loop,offset=4096 massstorage /mnt/ms");
+  if (res)
+  {
+    std::cerr << "mount failed with " << res << std::endl;
+    return;
+  }
   /*if (mount("massstorage", "/mnt/ms", "vfat", 0, "loop,offset=4096"))
   {
     perror("mount");
@@ -883,11 +888,18 @@ void processCommands(State& s, Emitter emitter, std::string& readBuffer)
   if (enter_main_menu(readBuffer))
   {
     readBuffer.clear();
-    liveSpecial.reset(new Menu({"effective mapping",
+    liveSpecial.reset(new Menu({
+                               "RESET",
+                               "effective mapping",
                                "target mapping",
                                "reload (UNMOUNT FIRST!)",
                                "reboot"},
       dispatcher(
+        [] {
+          std::ifstream ifs("mappings/default.xmodmap");
+          state.effective = parse_xmodmap(ifs);
+          state.target = state.effective;
+        },
         [] {
           liveSpecial.reset(new Menu(list_mappings(), [](int mapping) {
               auto mappings = list_mappings();
