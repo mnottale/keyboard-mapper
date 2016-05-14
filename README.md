@@ -71,8 +71,9 @@ Copy the following to a directory on the PI:
 - makegadget.sh
 - config.txt
 - startmapping.sh
-- Mapping files (*.xmodmap). You can obtain a .xmodmap file for the current
-mapping by running 'xmodmap -pke'.
+- Mapping files (*.xmodmap) into the 'mappings' subdirectory. You can obtain a .xmodmap file for the current
+mapping by running 'xmodmap -pke'. You should name one of the mappings
+'default.xmodmap' with a safe default (such as azerty or qwerty).
 
 Edit config.txt and add the following line:
 
@@ -90,6 +91,25 @@ Finally, run 'sudo crontab -e' and add the following line:
 
 And that should be it, reboot the two boards, connect a keyboard to board 1,
 a computer to board 2, and start typing on your favorite mapping.
+
+
+
+The menu system
+---------------
+
+Enabled mappings can be reconfigured live through the use of a menu system.
+To use it, open a text editor and hit the key sequence
+'return backspace return backspace'. This will show a menu. Move around with
+the arrow keys, and select with 'return'.
+
+The first menu entry is always 'reset' and will reset effective and target
+mappings to 'default.xmodmap'.
+
+Next menu entries allow you to select effective and target mappings from all
+the .xmodmap files that you put in the 'mappings' subdirectory.
+
+You can configure the key sequences that activate the menu in the config.txt
+file.
 
 
 
